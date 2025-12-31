@@ -200,16 +200,17 @@ def build_network_html(players: pd.DataFrame, edges: pd.DataFrame, height_px: in
 
     # Add nodes
     for _, r in players.iterrows():
+        # Format tooltip with newlines (PyVis will render HTML properly)
         title = (
-            f"<b>{r['platform_uid']}</b><br>"
-            f"username: {r['username']}<br>"
-            f"status: {r['status']}<br>"
-            f"bot_score_ml: {r['bot_score_ml']:.2f}<br>"
-            f"adl_score: {int(r['adl_score'])}<br>"
-            f"suspicious_hands: {int(r['suspicious_hand_count'])}<br>"
-            f"marked_hands: {int(r['marked_hand_count'])}<br>"
-            f"device: {r['primary_device']}<br>"
-            f"ip: {r['primary_ip']}<br>"
+            f"{r['platform_uid']}\n"
+            f"Username: {r['username']}\n"
+            f"Status: {r['status']}\n"
+            f"Bot Score ML: {r['bot_score_ml']:.2f}\n"
+            f"ADL Score: {int(r['adl_score'])}\n"
+            f"Suspicious Hands: {int(r['suspicious_hand_count'])}\n"
+            f"Marked Hands: {int(r['marked_hand_count'])}\n"
+            f"Device: {r['primary_device']}\n"
+            f"IP: {r['primary_ip']}"
         )
 
         net.add_node(
@@ -225,10 +226,10 @@ def build_network_html(players: pd.DataFrame, edges: pd.DataFrame, height_px: in
     for _, e in edges.iterrows():
         w = float(1 + 6 * e["relation_strength"])
         title = (
-            f"<b>{e['relation_type']}</b><br>"
-            f"strength: {e['relation_strength']:.2f}<br>"
-            f"evidence: {e['evidence_sample']}<br>"
-            f"count: {int(e['evidence_count'])}"
+            f"{e['relation_type']}\n"
+            f"Strength: {e['relation_strength']:.2f}\n"
+            f"Evidence: {e['evidence_sample']}\n"
+            f"Count: {int(e['evidence_count'])}"
         )
         net.add_edge(
             e["src_platform_uid"],
