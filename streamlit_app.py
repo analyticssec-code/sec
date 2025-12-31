@@ -222,15 +222,31 @@ def build_network_html(players: pd.DataFrame, edges: pd.DataFrame, height_px: in
         )
 
     # Add edges
-    # Edge width based on relation_strength
+    # Edge width based on relation_strength (now uses boosted strength for multi-type edges)
     for _, e in edges.iterrows():
         w = float(1 + 6 * e["relation_strength"])
-        title = (
-            f"{e['relation_type']}\n"
-            f"Strength: {e['relation_strength']:.2f}\n"
-            f"Evidence: {e['evidence_sample']}\n"
-            f"Count: {int(e['evidence_count'])}"
-        )
+        # Handle combined relation types (multiple types separated by comma)
+        relation_types = e['relation_type']
+        num_types = e.get('num_relation_types', 1)
+        
+        if num_types > 1:
+            # Multiple relation types combined
+            max_strength = e.get('max_strength', e['relation_strength'])
+            title = (
+                f"Relations ({num_types} types): {relation_types}\n"
+                f"Boosted Strength: {e['relation_strength']:.2f}\n"
+                f"Max Individual Strength: {max_strength:.2f}\n"
+                f"Total Evidence Count: {int(e['evidence_count'])}\n"
+                f"Details:\n{e['evidence_sample']}"
+            )
+        else:
+            # Single relation type
+            title = (
+                f"{relation_types}\n"
+                f"Strength: {e['relation_strength']:.2f}\n"
+                f"Evidence: {e['evidence_sample']}\n"
+                f"Count: {int(e['evidence_count'])}"
+            )
         net.add_edge(
             e["src_platform_uid"],
             e["related_platform_uid"],
@@ -271,12 +287,90 @@ with st.sidebar:
     st.header("Filters")
     case_id = st.selectbox("Group case", sorted(players_df["group_case_id"].unique()))
 
+    # Get case-specific data for filters
+    case_players_temp = players_df[players_df["group_case_id"] == case_id].copy()
+    
     available_types = sorted(edges_df.loc[edges_df["group_case_id"] == case_id, "relation_type"].unique())
     selected_types = st.multiselect("Relation types", available_types, default=available_types)
 
     min_strength = st.slider("Min relation strength", 0.0, 1.0, 0.45, 0.05)
+    
+    st.divider()
+    st.subheader("Player Filters")
+    
+    # Platform UID filter
+    available_uids = sorted(case_players_temp["platform_uid"].unique())
+    selected_uids = st.multiselect(
+        "Platform UID (players)", 
+        available_uids, 
+        default=[],
+        help="Select specific players to show. Leave empty to show all."
+    )
+    
+    # Device filter
+    available_devices = sorted(case_players_temp["primary_device"].unique())
+    selected_devices = st.multiselect(
+        "Primary Device", 
+        available_devices, 
+        default=[],
+        help="Filter by device. Leave empty to show all devices."
+    )
+    
+    # IP filter
+    available_ips = sorted(case_players_temp["primary_ip"].unique())
+    selected_ips = st.multiselect(
+        "Primary IP", 
+        available_ips, 
+        default=[],
+        help="Filter by IP address. Leave empty to show all IPs."
+    )
+    
+    # Status filter
+    available_statuses = sorted(case_players_temp["status"].unique())
+    selected_statuses = st.multiselect(
+        "Status", 
+        available_statuses, 
+        default=available_statuses,
+        help="Filter by player status (active/watched/banned)."
+    )
+    
+    # Bot score threshold
+    min_bot_score = st.slider(
+        "Min Bot Score ML", 
+        0.0, 1.0, 0.0, 0.05,
+        help="Minimum bot score to include players"
+    )
+    
+    # ADL score threshold
+    min_adl_score = st.slider(
+        "Min ADL Score", 
+        0, 100, 0, 5,
+        help="Minimum ADL score to include players"
+    )
+    
+    # Suspicious hand count threshold
+    min_suspicious_hands = st.slider(
+        "Min Suspicious Hands", 
+        0, 20, 0, 1,
+        help="Minimum suspicious hand count to include players"
+    )
+    
+    # Edge count threshold
+    min_edge_count = st.slider(
+        "Min Edge Count (connections)", 
+        0, 20, 0, 1,
+        help="Minimum number of edges/connections a player must have. Use this to find highly connected players."
+    )
+    
+    st.divider()
+    st.subheader("Display Options")
     only_connected = st.checkbox("Show only connected players", value=True)
     only_suspicious_src = st.checkbox("Edges only from suspicious players", value=True)
+    only_multi_relation_edges = st.checkbox(
+        "Show only edges with multiple relation types", 
+        value=False,
+        help="Filter to show only edges where two players have multiple types of relationships (e.g., same device + played together)"
+    )
 
     st.divider()
     st.subheader("Graph size controls")
@@ -287,13 +381,109 @@ with st.sidebar:
 case_players = players_df[players_df["group_case_id"] == case_id].copy()
 case_edges = edges_df[edges_df["group_case_id"] == case_id].copy()
 
-# Apply filters
+# Apply player filters
+if selected_uids:
+    case_players = case_players[case_players["platform_uid"].isin(selected_uids)]
+
+if selected_devices:
+    case_players = case_players[case_players["primary_device"].isin(selected_devices)]
+
+if selected_ips:
+    case_players = case_players[case_players["primary_ip"].isin(selected_ips)]
+
+if selected_statuses:
+    case_players = case_players[case_players["status"].isin(selected_statuses)]
+
+case_players = case_players[case_players["bot_score_ml"] >= min_bot_score]
+case_players = case_players[case_players["adl_score"] >= min_adl_score]
+case_players = case_players[case_players["suspicious_hand_count"] >= min_suspicious_hands]
+
+# Apply edge filters
 case_edges = case_edges[case_edges["relation_type"].isin(selected_types)]
 case_edges = case_edges[case_edges["relation_strength"] >= min_strength]
+
+# Calculate edge counts for each player (before filtering players)
+# Count both outgoing (src) and incoming (related) edges
+edge_counts = {}
+all_player_uids = set(case_players["platform_uid"])
+for uid in all_player_uids:
+    outgoing = len(case_edges[case_edges["src_platform_uid"] == uid])
+    incoming = len(case_edges[case_edges["related_platform_uid"] == uid])
+    # Count unique connections (avoid double-counting bidirectional edges)
+    unique_connections = len(set(
+        list(case_edges[case_edges["src_platform_uid"] == uid]["related_platform_uid"]) +
+        list(case_edges[case_edges["related_platform_uid"] == uid]["src_platform_uid"])
+    ))
+    edge_counts[uid] = unique_connections
+
+# Add edge count to players dataframe
+case_players["edge_count"] = case_players["platform_uid"].map(edge_counts).fillna(0).astype(int)
+
+# Filter players by edge count
+case_players = case_players[case_players["edge_count"] >= min_edge_count]
+
+# Filter edges to only include connections between filtered players
+filtered_player_set = set(case_players["platform_uid"])
+case_edges = case_edges[
+    (case_edges["src_platform_uid"].isin(filtered_player_set)) &
+    (case_edges["related_platform_uid"].isin(filtered_player_set))
+]
 
 if only_suspicious_src:
     suspicious_set = set(case_players.loc[case_players["suspicious_hand_count"] > 0, "platform_uid"])
     case_edges = case_edges[case_edges["src_platform_uid"].isin(suspicious_set)]
+
+# Aggregate multiple edges between same nodes into single edge with combined relation types
+# PyVis doesn't support visualizing multiple parallel edges, so we combine them
+if not case_edges.empty:
+    aggregated_edges = []
+    for (src, dst), group in case_edges.groupby(["src_platform_uid", "related_platform_uid"]):
+        if len(group) > 1:
+            # Multiple relation types - combine them
+            relation_types = sorted(group["relation_type"].tolist())
+            num_types = len(relation_types)
+            
+            # Better approach: Use evidence-weighted average strength, then boost for multiple types
+            # This gives more weight to relations with more evidence (e.g., 100 hands vs 1 device match)
+            total_evidence = group["evidence_count"].sum()
+            if total_evidence > 0:
+                weighted_strength = sum(group["relation_strength"] * group["evidence_count"]) / total_evidence
+            else:
+                weighted_strength = group["relation_strength"].mean()
+            
+            # Boost strength for multiple relation types (more suspicious when multiple signals align)
+            # Formula: weighted_strength * (1 + 0.25 * (num_types - 1))
+            # This means: 1 type = 1.0x, 2 types = 1.25x, 3 types = 1.5x, etc.
+            boosted_strength = min(1.0, weighted_strength * (1 + 0.25 * (num_types - 1)))
+            
+            max_strength = group["relation_strength"].max()
+            evidence_samples = " | ".join([f"{row['relation_type']}: {row['evidence_sample']}" 
+                                          for _, row in group.iterrows()])
+            
+            aggregated_edges.append({
+                "group_case_id": group.iloc[0]["group_case_id"],
+                "src_platform_uid": src,
+                "related_platform_uid": dst,
+                "relation_type": ", ".join(relation_types),  # Combined types
+                "relation_strength": float(boosted_strength),  # Use boosted strength for visualization
+                "max_strength": float(max_strength),  # Keep original max for reference
+                "num_relation_types": num_types,  # Track number of types
+                "evidence_count": int(total_evidence),
+                "evidence_sample": evidence_samples,
+                "computed_ts": group.iloc[0]["computed_ts"],
+            })
+        else:
+            # Single relation type - keep as is
+            row = group.iloc[0].to_dict()
+            row["num_relation_types"] = 1
+            row["max_strength"] = row["relation_strength"]
+            aggregated_edges.append(row)
+    
+    case_edges = pd.DataFrame(aggregated_edges)
+    
+    # Filter to show only edges with multiple relation types if requested
+    if only_multi_relation_edges:
+        case_edges = case_edges[case_edges["num_relation_types"] > 1].copy()
 
 # Cap edges for usability
 case_edges = case_edges.sort_values("relation_strength", ascending=False).head(max_edges)
@@ -331,10 +521,11 @@ with right:
     st.subheader("Tables (mock)")
     st.markdown("**Players (nodes)**")
     st.dataframe(
-        case_players.sort_values(["status", "bot_score_ml"], ascending=[True, False])[
+        case_players.sort_values(["edge_count", "bot_score_ml"], ascending=[False, False])[
             [
                 "platform_uid",
                 "username",
+                "edge_count",
                 "status",
                 "bot_score_ml",
                 "adl_score",
@@ -357,17 +548,19 @@ with right:
     )
 
     st.markdown("**Relations (edges)**")
+    # Show num_relation_types column if it exists
+    display_cols = [
+        "src_platform_uid",
+        "related_platform_uid",
+        "relation_type",
+        "relation_strength",
+        "evidence_count",
+        "evidence_sample",
+    ]
+    if "num_relation_types" in case_edges.columns:
+        display_cols.insert(3, "num_relation_types")  # Insert after relation_type
     st.dataframe(
-        case_edges[
-            [
-                "src_platform_uid",
-                "related_platform_uid",
-                "relation_type",
-                "relation_strength",
-                "evidence_count",
-                "evidence_sample",
-            ]
-        ],
+        case_edges[display_cols],
         use_container_width=True,
         height=320,
     )
